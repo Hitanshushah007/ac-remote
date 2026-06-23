@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { ping } from '../smartthings';
 import { saveToken } from '../storage';
+import { syncNativeConfig } from '../nativeSync';
 
 const TOKENS_URL = 'https://account.smartthings.com/tokens';
 
@@ -27,6 +28,7 @@ export default function SetupScreen({ onConnected }: { onConnected: (token: stri
     try {
       const count = await ping(trimmed);
       await saveToken(trimmed);
+      syncNativeConfig();
       if (count === 0) {
         setError('Connected, but the token sees 0 devices. Check its scopes.');
         setBusy(false);

@@ -11,6 +11,7 @@ import * as Haptics from 'expo-haptics';
 import { compass8 } from '../geometry';
 import { listSwitchableDevices, setSwitch, StDevice } from '../smartthings';
 import { Calibration, loadCalibrations, saveCalibrations } from '../storage';
+import { syncNativeConfig } from '../nativeSync';
 import { useAim } from '../useAim';
 
 export default function CalibrateScreen({ token, onBack }: { token: string; onBack: () => void }) {
@@ -45,12 +46,14 @@ export default function CalibrateScreen({ token, onBack }: { token: string; onBa
     next.push({ deviceId: d.deviceId, label: d.label, heading: aim.heading, pitch: aim.pitch });
     setCals(next);
     await saveCalibrations(next);
+    syncNativeConfig();
   }
 
   async function forget(d: StDevice) {
     const next = cals.filter((c) => c.deviceId !== d.deviceId);
     setCals(next);
     await saveCalibrations(next);
+    syncNativeConfig();
   }
 
   // Briefly switch a device on so the user can confirm which physical unit it is.

@@ -21,7 +21,8 @@
       ],
       "expo-status-bar",
       "expo-secure-store",
-      "./plugins/withLockScreen"
+      "./plugins/withLockScreen",
+      "./plugins/withVolumeToggle"
     ]
   }
 }

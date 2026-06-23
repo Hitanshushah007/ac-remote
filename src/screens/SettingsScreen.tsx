@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { currentSsid } from '../wifi';
+import { syncNativeConfig } from '../nativeSync';
 import {
   clearHomeSsid,
   loadHomeSsid,
@@ -28,10 +29,12 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     if (!ssid) return;
     await saveHomeSsid(ssid);
     setHome(ssid);
+    syncNativeConfig();
   }
   async function clearHome() {
     await clearHomeSsid();
     setHome(null);
+    syncNativeConfig();
   }
   async function toggleInstant(v: boolean) {
     setInstant(v);

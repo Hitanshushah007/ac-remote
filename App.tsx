@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, BackHandler, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import SetupScreen from './src/screens/SetupScreen';
 import CalibrateScreen from './src/screens/CalibrateScreen';
 import PointScreen from './src/screens/PointScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import { loadToken } from './src/storage';
+import { syncNativeConfig } from './src/nativeSync';
 
 type Screen = 'loading' | 'setup' | 'calibrate' | 'point' | 'settings';
 
@@ -18,6 +19,15 @@ export default function App() {
       setToken(t);
       setScreen(t ? 'point' : 'setup');
     });
+    syncNativeConfig();
+  }, []);
+
+  // Keep the background volume-toggle service's config fresh on each foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') syncNativeConfig();
+    });
+    return () => sub.remove();
   }, []);
 
   // Android hardware back: Calibrate returns to the radar; the radar is the
