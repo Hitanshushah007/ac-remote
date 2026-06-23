@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, BackHandler, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import SetupScreen from './src/screens/SetupScreen';
 import CalibrateScreen from './src/screens/CalibrateScreen';
@@ -19,6 +19,19 @@ export default function App() {
     });
   }, []);
 
+  // Android hardware back: Calibrate returns to the radar; the radar is the
+  // root, so back there exits the app.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'calibrate') {
+        setScreen('point');
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [screen]);
+
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
@@ -35,7 +48,7 @@ export default function App() {
       )}
 
       {screen === 'calibrate' && token && (
-        <CalibrateScreen token={token} onDone={() => setScreen('point')} />
+        <CalibrateScreen token={token} onBack={() => setScreen('point')} />
       )}
 
       {screen === 'point' && token && (

@@ -1,29 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import * as Haptics from 'expo-haptics';
-import { aimDistance, compass8, headingDelta } from '../geometry';
-import { getSwitchState, setSwitch } from '../smartthings';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Calibration,
-  loadCalibrations,
-  loadLastRoom,
-  roomOf,
-  saveLastRoom,
-} from '../storage';
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { compass8, relativeBearing } from '../geometry';
+import { getSwitchState, setSwitch } from '../smartthings';
+import { Calibration, loadCalibrations } from '../storage';
 import { useAim } from '../useAim';
 
-// Aim tolerance before a device locks. Generous because within one room the
-// candidates are usually far apart (e.g. east vs west ends).
-const LOCK_THRESHOLD = 40;
-
-function uniqueRooms(cals: Calibration[]): string[] {
-  const out: string[] = [];
-  for (const c of cals) {
-    const r = roomOf(c);
-    if (!out.includes(r)) out.push(r);
-  }
-  return out;
-}
+const LOCK = 24; // degrees of aim tolerance to lock a device
+const RADAR = 300; // px
+const C = RADAR / 2; // center
+const R = C - 26; // radius the blips sit on
 
 export default function PointScreen({
   token,
@@ -34,53 +28,42 @@ export default function PointScreen({
 }) {
   const { aim, ready, error } = useAim(true);
   const [cals, setCals] = useState<Calibration[]>([]);
-  const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
   const [states, setStates] = useState<Record<string, boolean | null>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const sweep = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    (async () => {
-      const [c, last] = await Promise.all([loadCalibrations(), loadLastRoom()]);
-      setCals(c);
-      const roomList = uniqueRooms(c);
-      setSelectedRoom((last && roomList.includes(last) ? last : roomList[0]) ?? null);
-    })();
+    loadCalibrations().then(setCals);
   }, []);
 
-  const rooms = useMemo(() => uniqueRooms(cals), [cals]);
-  const candidates = useMemo(
-    () => cals.filter((c) => roomOf(c) === selectedRoom),
-    [cals, selectedRoom]
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(sweep, {
+        toValue: 1,
+        duration: 2800,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [sweep]);
+
+  // Each device's signed angle from where we're aiming, nearest-to-ahead first.
+  const ranked = useMemo(
+    () =>
+      cals
+        .map((c) => ({ c, rel: relativeBearing(aim.heading, c.heading) }))
+        .sort((a, b) => Math.abs(a.rel) - Math.abs(b.rel)),
+    [cals, aim.heading]
   );
-  const multi = candidates.length > 1;
-
-  function pickRoom(room: string) {
-    setSelectedRoom(room);
-    saveLastRoom(room);
-    Haptics.selectionAsync();
-  }
-
-  // The targeted appliance: the only one in the room, or the one we're aiming at.
-  const locked = useMemo<Calibration | null>(() => {
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
-    let best: Calibration | null = null;
-    let bestD = Infinity;
-    for (const c of candidates) {
-      const d = aimDistance(aim.heading, aim.pitch, c);
-      if (d < bestD) {
-        bestD = d;
-        best = c;
-      }
-    }
-    return best && bestD <= LOCK_THRESHOLD ? best : null;
-  }, [aim, candidates]);
-
+  const locked = ranked.length && Math.abs(ranked[0].rel) <= LOCK ? ranked[0].c : null;
   const lockedId = locked?.deviceId ?? null;
+
   useEffect(() => {
     if (!lockedId) return;
-    if (multi) Haptics.selectionAsync();
+    Haptics.selectionAsync();
     if (!(lockedId in states)) {
       getSwitchState(token, lockedId)
         .then((v) => setStates((s) => ({ ...s, [lockedId]: v })))
@@ -110,174 +93,227 @@ export default function PointScreen({
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyTitle}>Nothing calibrated yet</Text>
-        <Text style={styles.emptySub}>Teach the app where each appliance is to start pointing.</Text>
+        <Text style={styles.emptySub}>Capture the direction of each appliance to start pointing.</Text>
         <Pressable style={styles.primary} onPress={onCalibrate}>
-          <Text style={styles.primaryText}>Calibrate appliances</Text>
+          <Text style={styles.primaryText}>Add devices</Text>
         </Pressable>
       </View>
     );
   }
 
   const lockedState = locked ? states[locked.deviceId] : undefined;
+  const sweepRotate = sweep.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const ring = (size: number) => ({
+    position: 'absolute' as const,
+    width: size,
+    height: size,
+    borderRadius: size / 2,
+    left: C - size / 2,
+    top: C - size / 2,
+    borderWidth: 1,
+    borderColor: '#1c2a20',
+  });
 
   return (
     <View style={styles.root}>
       <View style={styles.topbar}>
         <Text style={styles.heading}>
-          {ready ? `${Math.round(aim.heading)}° ${compass8(aim.heading)}` : 'compass…'}
+          {ready ? `${Math.round(aim.heading)}° ${compass8(aim.heading)}` : 'reading compass…'}
         </Text>
-        <Pressable onPress={onCalibrate}>
-          <Text style={styles.link}>Recalibrate</Text>
+        <Pressable onPress={onCalibrate} hitSlop={10}>
+          <Text style={styles.link}>Devices</Text>
         </Pressable>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.chips}
-        contentContainerStyle={styles.chipsContent}
-      >
-        {rooms.map((r) => (
-          <Pressable
-            key={r}
-            style={[styles.chip, r === selectedRoom && styles.chipOn]}
-            onPress={() => pickRoom(r)}
+      <View style={styles.radarWrap}>
+        <View style={{ width: RADAR, height: RADAR }}>
+          <View style={ring(RADAR)} />
+          <View style={ring(RADAR * 0.66)} />
+          <View style={ring(RADAR * 0.33)} />
+
+          {/* lock zone wedge + aim line at the top (12 o'clock = where you point) */}
+          <View style={styles.aimLine} />
+          <View style={styles.aimDot} />
+
+          {/* rotating radar sweep */}
+          <Animated.View
+            style={[styles.sweepBox, { transform: [{ rotate: sweepRotate }] }]}
+            pointerEvents="none"
           >
-            <Text style={[styles.chipText, r === selectedRoom && styles.chipTextOn]}>{r}</Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+            <View style={styles.sweepArm} />
+          </Animated.View>
 
-      <View style={styles.stage}>
-        <View style={[styles.reticle, locked && styles.reticleLocked]}>
-          {locked ? (
-            <>
-              <Text style={styles.lockedLabel}>{locked.label}</Text>
-              <Text style={styles.lockedState}>
-                {lockedState === true ? 'ON' : lockedState === false ? 'OFF' : '—'}
-              </Text>
-              {multi && <Text style={styles.lockedDir}>facing {compass8(locked.heading)}</Text>}
-            </>
-          ) : (
-            <Text style={styles.scan}>
-              {multi ? 'Aim at the\nappliance' : 'No appliance\nin this room'}
-            </Text>
-          )}
-        </View>
-
-        <Pressable
-          style={[styles.toggle, !locked && styles.toggleDisabled, busyId && styles.toggleBusy]}
-          onPress={() => locked && toggle(locked)}
-          disabled={!locked || !!busyId}
-        >
-          <Text style={styles.toggleText}>
-            {locked ? (lockedState === true ? 'Turn off' : 'Turn on') : multi ? 'Point at one' : '—'}
-          </Text>
-        </Pressable>
-
-        {multi && <Text style={styles.hint}>Two+ in this room — point to choose</Text>}
-        {actionError && <Text style={styles.error}>{actionError}</Text>}
-        {error && <Text style={styles.error}>{error}</Text>}
-      </View>
-
-      <Text style={styles.listTitle}>{selectedRoom ?? 'Room'}</Text>
-      <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
-        {candidates
-          .map((c) => ({ c, delta: headingDelta(aim.heading, c.heading) }))
-          .sort((a, b) => a.delta - b.delta)
-          .map(({ c, delta }) => {
-            const on = states[c.deviceId];
+          {/* device blips, positioned by their angle relative to your aim */}
+          {ranked.map(({ c, rel }) => {
+            const th = (rel * Math.PI) / 180;
+            const x = C + R * Math.sin(th);
+            const y = C - R * Math.cos(th);
             const isLocked = lockedId === c.deviceId;
+            const on = states[c.deviceId];
             return (
-              <Pressable
+              <View
                 key={c.deviceId}
-                style={[styles.row, isLocked && styles.rowLocked]}
-                onPress={() => toggle(c)}
-                disabled={!!busyId}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rowLabel}>{c.label}</Text>
-                  <Text style={styles.rowMeta}>
-                    {multi ? `${Math.round(delta)}° away · ${compass8(c.heading)}` : compass8(c.heading)}
-                  </Text>
-                </View>
-                <Text style={[styles.pill, on === true && styles.pillOn, on === false && styles.pillOff]}>
-                  {busyId === c.deviceId ? '…' : on === true ? 'ON' : on === false ? 'OFF' : '?'}
-                </Text>
-              </Pressable>
+                style={[
+                  styles.blip,
+                  { left: x - 7, top: y - 7 },
+                  on === true && styles.blipOn,
+                  isLocked && styles.blipLocked,
+                ]}
+              />
             );
           })}
+
+          {/* center readout */}
+          <View style={styles.center} pointerEvents="none">
+            {locked ? (
+              <>
+                <Text style={styles.lockName} numberOfLines={2}>
+                  {locked.label}
+                </Text>
+                <Text style={styles.lockState}>
+                  {lockedState === true ? 'ON' : lockedState === false ? 'OFF' : '—'}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.lockHint}>aim at{'\n'}a device</Text>
+            )}
+          </View>
+        </View>
+      </View>
+
+      <Pressable
+        style={[styles.toggle, !locked && styles.toggleOff, busyId && styles.toggleBusy]}
+        onPress={() => locked && toggle(locked)}
+        disabled={!locked || !!busyId}
+      >
+        <Text style={styles.toggleText}>
+          {locked ? (lockedState === true ? 'Turn off' : 'Turn on') : 'Point at a device'}
+        </Text>
+      </Pressable>
+
+      {actionError && <Text style={styles.err}>{actionError}</Text>}
+      {error && <Text style={styles.err}>{error}</Text>}
+
+      <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 16 }}>
+        {ranked.map(({ c, rel }) => {
+          const on = states[c.deviceId];
+          return (
+            <Pressable
+              key={c.deviceId}
+              style={[styles.row, lockedId === c.deviceId && styles.rowLocked]}
+              onPress={() => toggle(c)}
+              disabled={!!busyId}
+            >
+              <Text style={styles.rowLabel} numberOfLines={1}>
+                {c.label}
+              </Text>
+              <Text style={styles.rowDelta}>{Math.round(Math.abs(rel))}°</Text>
+              <Text style={[styles.pill, on === true && styles.pillOn, on === false && styles.pillOff]}>
+                {busyId === c.deviceId ? '…' : on === true ? 'ON' : on === false ? 'OFF' : '?'}
+              </Text>
+            </Pressable>
+          );
+        })}
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, paddingTop: 60, paddingHorizontal: 20, paddingBottom: 20 },
+  root: { flex: 1, paddingTop: 56, paddingHorizontal: 20, paddingBottom: 18 },
   topbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   heading: { color: '#9aa0a6', fontSize: 15, fontWeight: '600', fontVariant: ['tabular-nums'] },
   link: { color: '#4ade80', fontSize: 15, fontWeight: '600' },
-  chips: { flexGrow: 0, marginTop: 14 },
-  chipsContent: { gap: 8, paddingRight: 12 },
-  chip: {
-    backgroundColor: '#161616',
-    borderColor: '#2a2a2a',
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 16,
-    paddingVertical: 9,
+  radarWrap: { alignItems: 'center', justifyContent: 'center', paddingVertical: 14 },
+
+  aimLine: {
+    position: 'absolute',
+    left: C - 1,
+    top: 6,
+    width: 2,
+    height: C - 6,
+    backgroundColor: '#23402d',
   },
-  chipOn: { backgroundColor: '#1f3d2a', borderColor: '#2c4a35' },
-  chipText: { color: '#9aa0a6', fontSize: 14, fontWeight: '600' },
-  chipTextOn: { color: '#4ade80' },
-  stage: { alignItems: 'center', gap: 16, paddingVertical: 22 },
-  reticle: {
-    width: 210,
-    height: 210,
-    borderRadius: 105,
-    borderWidth: 2,
-    borderColor: '#262626',
+  aimDot: {
+    position: 'absolute',
+    left: C - 5,
+    top: -2,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#4ade80',
+  },
+  sweepBox: { position: 'absolute', width: RADAR, height: RADAR },
+  sweepArm: {
+    position: 'absolute',
+    left: C - 1,
+    top: 0,
+    width: 2,
+    height: C,
+    backgroundColor: '#2f6b45',
+    opacity: 0.7,
+  },
+
+  blip: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#3a3a3a',
+    borderWidth: 1,
+    borderColor: '#555',
+  },
+  blipOn: { backgroundColor: '#2f6b45', borderColor: '#4ade80' },
+  blipLocked: {
+    backgroundColor: '#4ade80',
+    borderColor: '#bbf7d0',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    marginLeft: -2,
+    marginTop: -2,
+  },
+
+  center: {
+    position: 'absolute',
+    left: C - 70,
+    top: C - 38,
+    width: 140,
+    height: 76,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 2,
   },
-  reticleLocked: { borderColor: '#4ade80', backgroundColor: '#0f1f14' },
-  scan: { color: '#666', fontSize: 18, textAlign: 'center', lineHeight: 24 },
-  lockedLabel: { color: '#f5f5f5', fontSize: 20, fontWeight: '700', textAlign: 'center', paddingHorizontal: 12 },
-  lockedState: { color: '#4ade80', fontSize: 32, fontWeight: '800', letterSpacing: 1 },
-  lockedDir: { color: '#5c8b6e', fontSize: 13, fontWeight: '600' },
+  lockName: { color: '#f5f5f5', fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  lockState: { color: '#4ade80', fontSize: 26, fontWeight: '800', letterSpacing: 1 },
+  lockHint: { color: '#5a5a5a', fontSize: 16, textAlign: 'center', lineHeight: 21 },
+
   toggle: {
     backgroundColor: '#4ade80',
     borderRadius: 16,
     paddingVertical: 18,
-    paddingHorizontal: 48,
-    minWidth: 240,
     alignItems: 'center',
+    marginTop: 4,
   },
-  toggleDisabled: { backgroundColor: '#1f2a22' },
+  toggleOff: { backgroundColor: '#1f2a22' },
   toggleBusy: { opacity: 0.6 },
   toggleText: { color: '#04130a', fontSize: 18, fontWeight: '800' },
-  hint: { color: '#777', fontSize: 13 },
-  error: { color: '#f87171', fontSize: 13, textAlign: 'center' },
-  listTitle: {
-    color: '#777',
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 8,
-  },
+  err: { color: '#f87171', fontSize: 13, textAlign: 'center', marginTop: 6 },
+
+  list: { marginTop: 12 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
     backgroundColor: '#141414',
     borderRadius: 12,
-    padding: 14,
-    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 8,
   },
   rowLocked: { borderWidth: 1, borderColor: '#2c4a35' },
-  rowLabel: { color: '#f5f5f5', fontSize: 16, fontWeight: '600' },
-  rowMeta: { color: '#777', fontSize: 13, marginTop: 2, fontVariant: ['tabular-nums'] },
+  rowLabel: { color: '#f5f5f5', fontSize: 16, fontWeight: '600', flex: 1 },
+  rowDelta: { color: '#777', fontSize: 13, fontVariant: ['tabular-nums'] },
   pill: {
     color: '#888',
     fontSize: 13,
@@ -292,6 +328,7 @@ const styles = StyleSheet.create({
   },
   pillOn: { color: '#04130a', backgroundColor: '#4ade80' },
   pillOff: { color: '#bbb', backgroundColor: '#222' },
+
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, padding: 32 },
   emptyTitle: { color: '#f5f5f5', fontSize: 22, fontWeight: '700' },
   emptySub: { color: '#9aa0a6', fontSize: 15, textAlign: 'center', lineHeight: 21 },
