@@ -1,13 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  Easing,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { compass8, relativeBearing } from '../geometry';
 import { getSwitchState, setSwitch } from '../smartthings';
@@ -31,24 +23,10 @@ export default function PointScreen({
   const [states, setStates] = useState<Record<string, boolean | null>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const sweep = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     loadCalibrations().then(setCals);
   }, []);
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.timing(sweep, {
-        toValue: 1,
-        duration: 2800,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [sweep]);
 
   // Each device's signed angle from where we're aiming, nearest-to-ahead first.
   const ranked = useMemo(
@@ -102,7 +80,6 @@ export default function PointScreen({
   }
 
   const lockedState = locked ? states[locked.deviceId] : undefined;
-  const sweepRotate = sweep.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
   const ring = (size: number) => ({
     position: 'absolute' as const,
     width: size,
@@ -131,17 +108,9 @@ export default function PointScreen({
           <View style={ring(RADAR * 0.66)} />
           <View style={ring(RADAR * 0.33)} />
 
-          {/* lock zone wedge + aim line at the top (12 o'clock = where you point) */}
+          {/* aim line at the top (12 o'clock = where you point) */}
           <View style={styles.aimLine} />
           <View style={styles.aimDot} />
-
-          {/* rotating radar sweep */}
-          <Animated.View
-            style={[styles.sweepBox, { transform: [{ rotate: sweepRotate }] }]}
-            pointerEvents="none"
-          >
-            <View style={styles.sweepArm} />
-          </Animated.View>
 
           {/* device blips, positioned by their angle relative to your aim */}
           {ranked.map(({ c, rel }) => {
@@ -243,17 +212,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: '#4ade80',
   },
-  sweepBox: { position: 'absolute', width: RADAR, height: RADAR },
-  sweepArm: {
-    position: 'absolute',
-    left: C - 1,
-    top: 0,
-    width: 2,
-    height: C,
-    backgroundColor: '#2f6b45',
-    opacity: 0.7,
-  },
-
   blip: {
     position: 'absolute',
     width: 14,

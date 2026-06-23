@@ -20,7 +20,8 @@
         }
       ],
       "expo-status-bar",
-      "expo-secure-store"
+      "expo-secure-store",
+      "./plugins/withLockScreen"
     ]
   }
 }
