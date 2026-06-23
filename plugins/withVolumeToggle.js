@@ -36,8 +36,7 @@ import kotlin.math.abs
 class PointAccessibilityService : AccessibilityService(), SensorEventListener {
     private var sensorManager: SensorManager? = null
     @Volatile private var heading = 0.0
-    private var volUp = false
-    private var volDown = false
+    private var lastDown = 0L
     private var lastFire = 0L
     private val handler = Handler(Looper.getMainLooper())
 
@@ -59,21 +58,21 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
         try { stopService(Intent(this, KeepAliveService::class.java)) } catch (e: Exception) {}
     }
 
+    // Double-press Volume-Down (two taps within 450ms) fires the toggle.
+    // We deliberately AVOID the both-volume-keys combo — Android reserves that for
+    // its own "accessibility shortcut" (which toggles this service on/off).
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        when (event.keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> volUp = event.action == KeyEvent.ACTION_DOWN
-            KeyEvent.KEYCODE_VOLUME_DOWN -> volDown = event.action == KeyEvent.ACTION_DOWN
-            else -> return false
+        if (event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return false
+        if (event.action != KeyEvent.ACTION_DOWN) return false
+        val now = System.currentTimeMillis()
+        if (now - lastDown < 450 && now - lastFire > 1500) {
+            lastFire = now
+            lastDown = 0L
+            trigger()
+            return true // swallow the 2nd tap so the volume doesn't keep dropping
         }
-        if (volUp && volDown) {
-            val now = System.currentTimeMillis()
-            if (now - lastFire > 1500) {
-                lastFire = now
-                trigger()
-            }
-            return true // consume while the combo is held
-        }
-        return false
+        lastDown = now
+        return false // single presses pass through — normal volume still works
     }
 
     override fun onSensorChanged(event: SensorEvent) {
