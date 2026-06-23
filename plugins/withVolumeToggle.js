@@ -19,6 +19,9 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.KeyEvent
@@ -36,6 +39,7 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
     private var volUp = false
     private var volDown = false
     private var lastFire = 0L
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -109,11 +113,25 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
     }
 
     private fun trigger() {
+        // Wake the CPU so the compass delivers a FRESH reading (when the screen is
+        // off, sensor delivery is suspended and the cached heading goes stale),
+        // then act ~450ms later once a new reading has arrived.
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PointRemote:trigger")
+        try { wl.acquire(4000) } catch (e: Exception) {}
+        handler.postDelayed({
+            try { doToggle() } catch (e: Exception) {} finally {
+                try { if (wl.isHeld) wl.release() } catch (e: Exception) {}
+            }
+        }, 450)
+    }
+
+    private fun doToggle() {
         val cfg = config() ?: return
-        if (!onHomeWifi(cfg)) { buzz(false); return }
+        if (!onHomeWifi(cfg)) { buzz(2); return }        // off home Wi-Fi
         val token = cfg.optString("token")
         val cals = cfg.optJSONArray("calibrations") ?: return
-        if (token.isEmpty() || cals.length() == 0) return
+        if (token.isEmpty() || cals.length() == 0) { buzz(1); return }
         var best: JSONObject? = null
         var bestD = 999.0
         for (i in 0 until cals.length()) {
@@ -121,29 +139,39 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
             val d = angDiff(heading, c.optDouble("heading"))
             if (d < bestD) { bestD = d; best = c }
         }
-        val target = best ?: return
-        if (bestD > 30.0) { buzz(false); return }
+        val target = best
+        if (target == null || bestD > 40.0) { buzz(1); return } // nothing in line
         val deviceId = target.optString("deviceId")
-        if (deviceId.isEmpty()) return
-        buzz(true)
+        if (deviceId.isEmpty()) { buzz(1); return }
         thread {
             try {
                 val cur = getSwitch(token, deviceId)
                 setSwitch(token, deviceId, !(cur ?: false))
-            } catch (e: Exception) {}
+                buzz(0)                                   // success
+            } catch (e: Exception) {
+                buzz(3)                                   // command failed (token/network)
+            }
         }
     }
 
-    private fun buzz(ok: Boolean) {
+    // 0 = sent OK (two quick taps) · 1 = nothing in line (one long) ·
+    // 2 = off home Wi-Fi (two long) · 3 = command failed: token/network (four fast)
+    private fun buzz(type: Int) {
         val v = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
-        try { v.vibrate(VibrationEffect.createOneShot(if (ok) 60L else 220L, VibrationEffect.DEFAULT_AMPLITUDE)) } catch (e: Exception) {}
+        val pattern = when (type) {
+            0 -> longArrayOf(0, 40, 70, 40)
+            1 -> longArrayOf(0, 320)
+            2 -> longArrayOf(0, 180, 120, 180)
+            else -> longArrayOf(0, 55, 55, 55, 55, 55, 55, 55)
+        }
+        try { v.vibrate(VibrationEffect.createWaveform(pattern, -1)) } catch (e: Exception) {}
     }
 
     private fun getSwitch(token: String, id: String): Boolean? {
         val c = URL("https://api.smartthings.com/v1/devices/$id/status").openConnection() as HttpURLConnection
         c.setRequestProperty("Authorization", "Bearer $token")
         c.connectTimeout = 8000; c.readTimeout = 8000
-        if (c.responseCode != 200) return null
+        if (c.responseCode != 200) throw Exception("status HTTP " + c.responseCode)
         val body = c.inputStream.bufferedReader().readText()
         val v = JSONObject(body).optJSONObject("components")?.optJSONObject("main")
             ?.optJSONObject("switch")?.optJSONObject("switch")?.optString("value")
@@ -158,7 +186,8 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
         c.connectTimeout = 8000; c.readTimeout = 8000
         val cmd = if (on) "on" else "off"
         c.outputStream.use { it.write("""{"commands":[{"component":"main","capability":"switch","command":"$cmd"}]}""".toByteArray()) }
-        c.responseCode
+        val code = c.responseCode
+        if (code < 200 || code >= 300) throw Exception("command HTTP " + code)
     }
 }
 `;
