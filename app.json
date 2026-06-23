@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Point Remote",
+    "slug": "ac-remote",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.hitanshushah.acremote"
+    },
+    "ios": {
+      "bundleIdentifier": "com.hitanshushah.acremote",
+      "supportsTablet": false
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Point Remote reads your phone's compass so you can aim at an appliance to control it."
+        }
+      ],
+      "expo-status-bar",
+      "expo-secure-store"
+    ]
+  }
+}

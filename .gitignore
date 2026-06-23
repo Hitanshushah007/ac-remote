@@ -1,0 +1,17 @@
+# deps & build output
+node_modules/
+.expo/
+dist/
+web-build/
+
+# native projects are generated in CI by `expo prebuild`
+/android/
+/ios/
+
+# misc
+*.log
+.DS_Store
+*.orig.*
+npm-debug.*
+yarn-error.*
+.env*.local
