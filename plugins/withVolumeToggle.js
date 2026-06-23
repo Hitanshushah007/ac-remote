@@ -12,11 +12,13 @@ const SERVICE_KT = `package ${PACKAGE}
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.KeyEvent
@@ -37,10 +39,20 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        // Keep the process resident so swiping the app from Recents can't stop us.
+        try {
+            val i = Intent(this, KeepAliveService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+        } catch (e: Exception) {}
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { stopService(Intent(this, KeepAliveService::class.java)) } catch (e: Exception) {}
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
@@ -151,6 +163,49 @@ class PointAccessibilityService : AccessibilityService(), SensorEventListener {
 }
 `;
 
+const KEEPALIVE_KT = `package ${PACKAGE}
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+
+// Minimal foreground service whose only job is to keep this process resident, so
+// the accessibility key-listener + compass survive the app being swiped away.
+class KeepAliveService : Service() {
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val channelId = "point_remote_bg"
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= 26) {
+            val ch = NotificationChannel(channelId, "Point Remote", NotificationManager.IMPORTANCE_MIN)
+            ch.setShowBadge(false)
+            nm.createNotificationChannel(ch)
+        }
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, channelId)
+            else @Suppress("DEPRECATION") Notification.Builder(this)
+        val notif = builder
+            .setContentTitle("Point Remote")
+            .setContentText("Volume-combo toggle active")
+            .setSmallIcon(R.drawable.ic_ac_tile)
+            .setOngoing(true)
+            .build()
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(7, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(7, notif)
+        }
+        return START_STICKY
+    }
+}
+`;
+
 const CONFIG_XML = `<?xml version="1.0" encoding="utf-8"?>
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeAllMask"
@@ -175,6 +230,9 @@ function withManifest(config) {
       'android.permission.ACCESS_WIFI_STATE',
       'android.permission.ACCESS_NETWORK_STATE',
       'android.permission.VIBRATE',
+      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+      'android.permission.POST_NOTIFICATIONS',
     ];
     for (const p of perms) {
       if (!manifest['uses-permission'].some((u) => u.$['android:name'] === p)) {
@@ -199,6 +257,23 @@ function withManifest(config) {
         ],
       });
     }
+    if (!app.service.some((s) => s.$['android:name'] === '.KeepAliveService')) {
+      app.service.push({
+        $: {
+          'android:name': '.KeepAliveService',
+          'android:exported': 'false',
+          'android:foregroundServiceType': 'specialUse',
+        },
+        property: [
+          {
+            $: {
+              'android:name': 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',
+              'android:value': 'Keeps the compass + volume-combo listener alive to toggle appliances you point at.',
+            },
+          },
+        ],
+      });
+    }
     return cfg;
   });
 }
@@ -211,6 +286,7 @@ function withFiles(config) {
       const pkgDir = path.join(root, 'app/src/main/java', ...PACKAGE.split('.'));
       fs.mkdirSync(pkgDir, { recursive: true });
       fs.writeFileSync(path.join(pkgDir, 'PointAccessibilityService.kt'), SERVICE_KT);
+      fs.writeFileSync(path.join(pkgDir, 'KeepAliveService.kt'), KEEPALIVE_KT);
 
       const xmlDir = path.join(root, 'app/src/main/res/xml');
       fs.mkdirSync(xmlDir, { recursive: true });
