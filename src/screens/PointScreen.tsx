@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { compass8, relativeBearing } from '../geometry';
 import { getSwitchState, setSwitch } from '../smartthings';
-import { Calibration, loadCalibrations } from '../storage';
+import { Calibration, loadCalibrations, loadInstantMode } from '../storage';
 import { useAim } from '../useAim';
+import { useHomeWifi } from '../wifi';
 
 const LOCK = 24; // degrees of aim tolerance to lock a device
 const RADAR = 300; // px
@@ -14,18 +15,36 @@ const R = C - 26; // radius the blips sit on
 export default function PointScreen({
   token,
   onCalibrate,
+  onSettings,
 }: {
   token: string;
   onCalibrate: () => void;
+  onSettings: () => void;
 }) {
   const { aim, ready, error } = useAim(true);
   const [cals, setCals] = useState<Calibration[]>([]);
   const [states, setStates] = useState<Record<string, boolean | null>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [instant, setInstant] = useState(false);
+  const { onHome, ssid } = useHomeWifi();
+  const firedRef = useRef(false);
+  const [arming, setArming] = useState(false);
 
   useEffect(() => {
     loadCalibrations().then(setCals);
+  }, []);
+
+  useEffect(() => {
+    loadInstantMode().then(setInstant);
+  }, []);
+
+  // Re-arm the touchless fire whenever the app returns to the foreground (Quick Tap).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') firedRef.current = false;
+    });
+    return () => sub.remove();
   }, []);
 
   // Each device's signed angle from where we're aiming, nearest-to-ahead first.
@@ -48,6 +67,23 @@ export default function PointScreen({
         .catch(() => {});
     }
   }, [lockedId]);
+
+  // Touchless auto-toggle: with instant mode on AND on home Wi-Fi, fire once the
+  // aim has held a device briefly. Fires once per foreground; tap radar to cancel.
+  useEffect(() => {
+    if (!instant || onHome !== true || !lockedId || firedRef.current) {
+      setArming(false);
+      return;
+    }
+    setArming(true);
+    const t = setTimeout(() => {
+      if (firedRef.current || !locked) return;
+      firedRef.current = true;
+      setArming(false);
+      toggle(locked);
+    }, 1300);
+    return () => clearTimeout(t);
+  }, [instant, onHome, lockedId]);
 
   async function toggle(c: Calibration) {
     setBusyId(c.deviceId);
@@ -97,12 +133,23 @@ export default function PointScreen({
         <Text style={styles.heading}>
           {ready ? `${Math.round(aim.heading)}° ${compass8(aim.heading)}` : 'reading compass…'}
         </Text>
-        <Pressable onPress={onCalibrate} hitSlop={10}>
-          <Text style={styles.link}>Devices</Text>
-        </Pressable>
+        <View style={styles.topRight}>
+          <Pressable onPress={onSettings} hitSlop={10}>
+            <Text style={styles.gear}>⚙</Text>
+          </Pressable>
+          <Pressable onPress={onCalibrate} hitSlop={10}>
+            <Text style={styles.link}>Devices</Text>
+          </Pressable>
+        </View>
       </View>
 
-      <View style={styles.radarWrap}>
+      <Pressable
+        style={styles.radarWrap}
+        onPress={() => {
+          firedRef.current = true;
+          setArming(false);
+        }}
+      >
         <View style={{ width: RADAR, height: RADAR }}>
           <View style={ring(RADAR)} />
           <View style={ring(RADAR * 0.66)} />
@@ -148,7 +195,7 @@ export default function PointScreen({
             )}
           </View>
         </View>
-      </View>
+      </Pressable>
 
       <Pressable
         style={[styles.toggle, !locked && styles.toggleOff, busyId && styles.toggleBusy]}
@@ -160,6 +207,14 @@ export default function PointScreen({
         </Text>
       </Pressable>
 
+      {arming && locked && (
+        <Text style={styles.armHint}>Toggling {locked.label}… tap the radar to cancel</Text>
+      )}
+      {instant && onHome === false && (
+        <Text style={styles.wifiHint}>
+          Touchless paused — not on home Wi-Fi{ssid ? ` (${ssid})` : ''}
+        </Text>
+      )}
       {actionError && <Text style={styles.err}>{actionError}</Text>}
       {error && <Text style={styles.err}>{error}</Text>}
 
@@ -193,6 +248,8 @@ const styles = StyleSheet.create({
   topbar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   heading: { color: '#9aa0a6', fontSize: 15, fontWeight: '600', fontVariant: ['tabular-nums'] },
   link: { color: '#4ade80', fontSize: 15, fontWeight: '600' },
+  topRight: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  gear: { color: '#9aa0a6', fontSize: 20 },
   radarWrap: { alignItems: 'center', justifyContent: 'center', paddingVertical: 14 },
 
   aimLine: {
@@ -257,6 +314,8 @@ const styles = StyleSheet.create({
   toggleBusy: { opacity: 0.6 },
   toggleText: { color: '#04130a', fontSize: 18, fontWeight: '800' },
   err: { color: '#f87171', fontSize: 13, textAlign: 'center', marginTop: 6 },
+  armHint: { color: '#4ade80', fontSize: 13, textAlign: 'center', marginTop: 8, fontWeight: '600' },
+  wifiHint: { color: '#9aa0a6', fontSize: 13, textAlign: 'center', marginTop: 8 },
 
   list: { marginTop: 12 },
   row: {

@@ -4,9 +4,10 @@ import { StatusBar } from 'expo-status-bar';
 import SetupScreen from './src/screens/SetupScreen';
 import CalibrateScreen from './src/screens/CalibrateScreen';
 import PointScreen from './src/screens/PointScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 import { loadToken } from './src/storage';
 
-type Screen = 'loading' | 'setup' | 'calibrate' | 'point';
+type Screen = 'loading' | 'setup' | 'calibrate' | 'point' | 'settings';
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('loading');
@@ -23,7 +24,7 @@ export default function App() {
   // root, so back there exits the app.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (screen === 'calibrate') {
+      if (screen === 'calibrate' || screen === 'settings') {
         setScreen('point');
         return true;
       }
@@ -52,8 +53,14 @@ export default function App() {
       )}
 
       {screen === 'point' && token && (
-        <PointScreen token={token} onCalibrate={() => setScreen('calibrate')} />
+        <PointScreen
+          token={token}
+          onCalibrate={() => setScreen('calibrate')}
+          onSettings={() => setScreen('settings')}
+        />
       )}
+
+      {screen === 'settings' && <SettingsScreen onBack={() => setScreen('point')} />}
     </View>
   );
 }
